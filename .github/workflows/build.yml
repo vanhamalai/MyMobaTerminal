@@ -1,4 +1,4 @@
-name: Build MyMobaTerminal Pro EXE
+name: Build MyMobaTerminal MSI and Portable Package
 
 on:
   push:
@@ -9,25 +9,79 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install PySide6 PySide6-WebEngine paramiko pyinstaller
+          pip install PySide6 paramiko pyinstaller
 
-      - name: Build Standalone EXE
+      - name: Build Application Directory (--onedir fixes PKG error)
         run: |
-          pyinstaller --noconsole --onefile --name="MyMobaTerminal" --collect-all PySide6_WebEngine MyMobaTerminal.py
+          pyinstaller --noconsole --onedir --clean --name="MyMobaTerminal" --hidden-import=PySide6.QtWebEngineWidgets --hidden-import=PySide6.QtWebChannel MyMobaTerminal.py
 
-      - name: Upload Executable Artifact
-        uses: actions/upload-artifact@v7
+      - name: Build Windows Installer (.MSI) using WiX Toolset
+        shell: pwsh
+        run: |
+          $sourceDir = "dist\MyMobaTerminal"
+          
+          # 1. Harvest all compiled application files using WiX heat.exe
+          & "$env:WIX\bin\heat.exe" dir $sourceDir -cg AppFiles -dr INSTALLFOLDER -srd -sfrag -gg -var var.SourceDir -out files.wxs
+
+          # 2. Create main WiX installer definition (Product.wxs)
+          @"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+            <Product Id="*" Name="MyMobaTerminal Pro" Language="1033" Version="1.0.0.0" Manufacturer="MyMobaCustom" UpgradeCode="12345678-1234-1234-1234-123456789012">
+              <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+              <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+              <MediaTemplate EmbedCab="yes" />
+
+              <Feature Id="ProductFeature" Title="MyMobaTerminal Pro" Level="1">
+                <ComponentGroupRef Id="AppFiles" />
+                <ComponentRef Id="ApplicationShortcuts" />
+              </Feature>
+
+              <Directory Id="TARGETDIR" Name="SourceDir">
+                <Directory Id="ProgramFiles64Folder">
+                  <Directory Id="INSTALLFOLDER" Name="MyMobaTerminal" />
+                </Directory>
+                <Directory Id="ProgramMenuFolder">
+                  <Directory Id="ApplicationProgramsFolder" Name="MyMobaTerminal" />
+                </Directory>
+                <Directory Id="DesktopFolder" Name="Desktop" />
+              </Directory>
+
+              <DirectoryRef Id="ApplicationProgramsFolder">
+                <Component Id="ApplicationShortcuts" Guid="87654321-4321-4321-4321-210987654321">
+                  <Shortcut Id="StartMenuShortcut" Name="MyMobaTerminal Pro" Description="Custom SSH and SFTP Suite" Target="[INSTALLFOLDER]MyMobaTerminal.exe" WorkingDirectory="INSTALLFOLDER" />
+                  <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="MyMobaTerminal Pro" Description="Custom SSH and SFTP Suite" Target="[INSTALLFOLDER]MyMobaTerminal.exe" WorkingDirectory="INSTALLFOLDER" />
+                  <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall" />
+                  <RegistryValue Root="HKCU" Key="Software\MyMobaCustom\MyMobaTerminal" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+                </Component>
+              </DirectoryRef>
+            </Product>
+          </Wix>
+          "@ | Out-File -Encoding utf8 Product.wxs
+
+          # 3. Compile (.wxs -> .wixobj) and Link (.wixobj -> .msi)
+          & "$env:WIX\bin\candle.exe" -arch x64 "-dSourceDir=$sourceDir" Product.wxs files.wxs
+          & "$env:WIX\bin\light.exe" -ext WixUIExtension -out MyMobaTerminal_Installer_1.0.msi Product.wixobj files.wixobj
+
+      - name: Upload MSI Installer Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: MyMobaTerminal-Pro-EXE
-          path: dist/MyMobaTerminal.exe
+          name: MyMobaTerminal_Installer_MSI
+          path: MyMobaTerminal_Installer_1.0.msi
+
+      - name: Upload Portable Folder Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyMobaTerminal_Portable
+          path: dist/MyMobaTerminal
